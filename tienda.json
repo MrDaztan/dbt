@@ -1,0 +1,5 @@
+{
+  "Espada corta": {"emoji": "🗡️", "precio": 25},
+  "Escudo de madera": {"emoji": "🛡️", "precio": 30},
+  "Poción de curación": {"emoji": "🧪", "precio": 15}
+}

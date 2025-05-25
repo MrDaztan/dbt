@@ -4,7 +4,6 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 
-# Configura ruta persistente (Render Disk debe montarse en /data)
 INVENTARIO_PATH = "inventarios.json"
 TIENDA_PATH = "tienda.json"
 
@@ -13,7 +12,6 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Diccionarios de memoria
 inventarios = {}
 tienda_data = {}
 
@@ -53,7 +51,7 @@ async def inventario(ctx):
     user_id = str(ctx.author.id)
     inv = inventarios.get(user_id, {"coronas": 0})
     msg = f"**Inventario de {ctx.author.display_name}:**\n"
-    msg += f"👑 Coronas: {inv.get('coronas', 0)}\n"
+    msg += f"🪙 Coronas: {inv.get('coronas', 0)}\n"
     for item, cantidad in inv.items():
         if item != "coronas":
             emoji = tienda_data.get(item, {}).get("emoji", "")
@@ -61,24 +59,59 @@ async def inventario(ctx):
     await ctx.send(msg)
 
 @bot.command()
+async def comandos(ctx):
+    msg = (
+        "**Lista de comandos:**\n"
+        "`!inventario` - Muestra tu inventario actual.\n"
+        "`!tienda` - Muestra los objetos disponibles en la tienda.\n"
+        "`!coronas <cantidad> [@usuario]` - Da coronas a un jugador (solo master).\n"
+        "`!coronas- <cantidad> [@usuario]` - Resta coronas a un jugador (solo master).\n"
+        "`!editaritem agregar <nombre> <emoji> <precio>` - Añade un item a la tienda (solo master).\n"
+        "`!editaritem quitar <nombre>` - Quita un item de la tienda (solo master).\n"
+        "`!daritem <usuario> <nombre_item> <cantidad>` - Da un item directo a un jugador (solo master).\n"
+    )
+    await ctx.send(msg)
+
+# Validar rol master
+def es_master(ctx):
+    return any(r.name.lower() == "master" for r in ctx.author.roles)
+
+@bot.command()
 async def coronas(ctx, cantidad: int, miembro: discord.Member = None):
+    if not es_master(ctx):
+        await ctx.send("❌ Solo los usuarios con el rol 'master' pueden usar este comando.")
+        return
     if miembro is None:
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
     inv["coronas"] = inv.get("coronas", 0) + cantidad
     guardar_inventarios()
-    await ctx.send(f"{miembro.display_name} ha recibido 👑 {cantidad} coronas. Total: {inv['coronas']}")
+    await ctx.send(f"{miembro.display_name} ha recibido 🪙 {cantidad} coronas. Total: {inv['coronas']}")
 
 @bot.command(name="coronas-")
 async def coronas_restar(ctx, cantidad: int, miembro: discord.Member = None):
+    if not es_master(ctx):
+        await ctx.send("❌ Solo los usuarios con el rol 'master' pueden usar este comando.")
+        return
     if miembro is None:
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
     inv["coronas"] = max(0, inv.get("coronas", 0) - cantidad)
     guardar_inventarios()
-    await ctx.send(f"A {miembro.display_name} se le han restado 👑 {cantidad} coronas. Total: {inv['coronas']}")
+    await ctx.send(f"A {miembro.display_name} se le han restado 🪙 {cantidad} coronas. Total: {inv['coronas']}")
+
+@bot.command()
+async def daritem(ctx, miembro: discord.Member, nombre: str, cantidad: int):
+    if not es_master(ctx):
+        await ctx.send("❌ Solo los usuarios con el rol 'master' pueden usar este comando.")
+        return
+    user_id = str(miembro.id)
+    inv = inventarios.setdefault(user_id, {"coronas": 0})
+    inv[nombre] = inv.get(nombre, 0) + cantidad
+    guardar_inventarios()
+    await ctx.send(f"✅ Se le ha dado {cantidad}x {nombre} a {miembro.display_name}.")
 
 class TiendaView(View):
     def __init__(self):
@@ -100,7 +133,7 @@ class TiendaView(View):
                     inv[item_name] = 1
                     inv["coronas"] -= precio
                     await interaction.response.send_message(
-                        f"Compraste {item_name} por 👑 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
+                        f"Compraste {item_name} por 🪙 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
                 else:
                     await interaction.response.send_message("❌ No tienes suficientes coronas.", ephemeral=True)
             else:
@@ -110,30 +143,34 @@ class TiendaView(View):
                     del inv[item_name]
                 inv["coronas"] += venta
                 await interaction.response.send_message(
-                    f"Vendiste {item_name} por 👑 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
+                    f"Vendiste {item_name} por 🪙 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
 
             guardar_inventarios()
         return callback
 
 @bot.command()
 async def tienda(ctx):
-    if not tienda:
+    if not tienda_data:
         await ctx.send("La tienda está vacía.")
         return
 
-    msg = "**🏪 Tienda de objetos:**\n"
+    msg = "**\U0001f3ea Tienda de objetos:**\n"
     for nombre, data in tienda_data.items():
-        msg += f"{data['emoji']} {nombre} — 👑 {data['precio']} coronas\n"
+        msg += f"{data['emoji']} {nombre} — 🪙 {data['precio']} coronas\n"
 
     view = TiendaView()
     await ctx.send(msg, view=view)
 
 @bot.command()
 async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: int = None):
+    if not es_master(ctx):
+        await ctx.send("❌ Solo los usuarios con el rol 'master' pueden usar este comando.")
+        return
+
     if accion.lower() == "agregar" and emoji and precio is not None:
         tienda_data[nombre] = {"emoji": emoji, "precio": precio}
         guardar_tienda()
-        await ctx.send(f"✅ Añadido: {emoji} {nombre} — 👑 {precio}")
+        await ctx.send(f"✅ Añadido: {emoji} {nombre} — 🪙 {precio}")
     elif accion.lower() == "quitar":
         if nombre in tienda_data:
             del tienda_data[nombre]
@@ -142,10 +179,9 @@ async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: i
         else:
             await ctx.send("Ese item no está en la tienda.")
     else:
-        await ctx.send("Uso: `!editaritem agregar nombre emoji precio` o `!editaritem quitar nombre`")
+        await ctx.send("Uso: `!editaritem agregar <nombre> <emoji> <precio>` o `!editaritem quitar <nombre>`")
 
 # Cargar datos antes de ejecutar el bot
 cargar_datos()
 
-# Ejecuta el bot con token desde variable de entorno
 bot.run(os.getenv("DISCORD_TOKEN"))

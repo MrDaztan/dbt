@@ -1,30 +1,44 @@
 import os
-import math
+import json
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
+
+# Configura ruta persistente (Render Disk debe montarse en /data)
+INVENTARIO_PATH = "inventarios.json"
+TIENDA_PATH = "tienda.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Inventarios por usuario: {user_id: {"items": {item_name: cantidad}, "coronas": int}}
+# Diccionarios de memoria
 inventarios = {}
+tienda_data = {}
 
-# Tienda dinámica: {nombre: {"emoji": str, "precio": int}}
-tienda = {
-    "Espada corta": {"emoji": "🗡️", "precio": 25},
-    "Escudo de madera": {"emoji": "🛡️", "precio": 30},
-    "Poción de curación": {"emoji": "🧪", "precio": 15},
-    "Mapa del tesoro": {"emoji": "🗺️", "precio": 40},
-    "Cuerda resistente": {"emoji": "🪢", "precio": 12},
-    "Antorcha": {"emoji": "🔥", "precio": 10},
-    "Anillo misterioso": {"emoji": "💍", "precio": 45},
-    "Libro antiguo": {"emoji": "📖", "precio": 20},
-    "Moneda de oro": {"emoji": "🪙", "precio": 5},
-    "Botella de ron": {"emoji": "🍾", "precio": 18},
-}
+# Cargar desde disco
+def cargar_datos():
+    global inventarios, tienda_data
+    try:
+        with open(INVENTARIO_PATH, "r", encoding="utf-8") as f:
+            inventarios.update(json.load(f))
+    except FileNotFoundError:
+        pass
+
+    try:
+        with open(TIENDA_PATH, "r", encoding="utf-8") as f:
+            tienda_data.update(json.load(f))
+    except FileNotFoundError:
+        pass
+
+def guardar_inventarios():
+    with open(INVENTARIO_PATH, "w", encoding="utf-8") as f:
+        json.dump(inventarios, f, indent=2, ensure_ascii=False)
+
+def guardar_tienda():
+    with open(TIENDA_PATH, "w", encoding="utf-8") as f:
+        json.dump(tienda_data, f, indent=2, ensure_ascii=False)
 
 @bot.event
 async def on_ready():
@@ -36,75 +50,69 @@ async def hola(ctx):
 
 @bot.command()
 async def inventario(ctx):
-    user_id = ctx.author.id
-    data = inventarios.get(user_id, {"items": {}, "coronas": 0})
-    items_inv = data["items"]
-    coronas = data["coronas"]
-
-    if not items_inv and coronas == 0:
-        await ctx.send("Tu inventario está vacío.")
-        return
-
+    user_id = str(ctx.author.id)
+    inv = inventarios.get(user_id, {"coronas": 0})
     msg = f"**Inventario de {ctx.author.display_name}:**\n"
-    for item, cantidad in items_inv.items():
-        emoji = tienda[item]["emoji"] if item in tienda else ""
-        msg += f"{emoji} {item}: {cantidad}\n"
-    msg += f"\n💰 Coronas: {coronas}"
+    msg += f"👑 Coronas: {inv.get('coronas', 0)}\n"
+    for item, cantidad in inv.items():
+        if item != "coronas":
+            emoji = tienda_data.get(item, {}).get("emoji", "")
+            msg += f"{emoji} {item}: {cantidad}\n"
     await ctx.send(msg)
 
 @bot.command()
-async def coronas(ctx, miembro: discord.Member, cantidad: int):
-    user_id = miembro.id
-    data = inventarios.setdefault(user_id, {"items": {}, "coronas": 0})
-    data["coronas"] += cantidad
-    await ctx.send(f"{cantidad} coronas añadidas a {miembro.display_name}. Ahora tiene {data['coronas']} coronas.")
+async def coronas(ctx, cantidad: int, miembro: discord.Member = None):
+    if miembro is None:
+        miembro = ctx.author
+    user_id = str(miembro.id)
+    inv = inventarios.setdefault(user_id, {"coronas": 0})
+    inv["coronas"] = inv.get("coronas", 0) + cantidad
+    guardar_inventarios()
+    await ctx.send(f"{miembro.display_name} ha recibido 👑 {cantidad} coronas. Total: {inv['coronas']}")
 
-@bot.command()
-async def coronasrestar(ctx, miembro: discord.Member, cantidad: int):
-    user_id = miembro.id
-    data = inventarios.setdefault(user_id, {"items": {}, "coronas": 0})
-    data["coronas"] = max(0, data["coronas"] - cantidad)
-    await ctx.send(f"{cantidad} coronas restadas a {miembro.display_name}. Ahora tiene {data['coronas']} coronas.")
+@bot.command(name="coronas-")
+async def coronas_restar(ctx, cantidad: int, miembro: discord.Member = None):
+    if miembro is None:
+        miembro = ctx.author
+    user_id = str(miembro.id)
+    inv = inventarios.setdefault(user_id, {"coronas": 0})
+    inv["coronas"] = max(0, inv.get("coronas", 0) - cantidad)
+    guardar_inventarios()
+    await ctx.send(f"A {miembro.display_name} se le han restado 👑 {cantidad} coronas. Total: {inv['coronas']}")
 
 class TiendaView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        for item_name, data in tienda.items():
-            btn = Button(style=discord.ButtonStyle.secondary, emoji=data["emoji"], custom_id=item_name)
+        for item_name, data in tienda_data.items():
+            emoji = data.get("emoji", "❔")
+            btn = Button(style=discord.ButtonStyle.secondary, emoji=emoji, custom_id=item_name)
             btn.callback = self.make_callback(item_name)
             self.add_item(btn)
 
     def make_callback(self, item_name):
         async def callback(interaction: discord.Interaction):
-            user_id = interaction.user.id
-            data = inventarios.setdefault(user_id, {"items": {}, "coronas": 0})
-            items_user = data["items"]
-            coronas = data["coronas"]
-            precio = tienda[item_name]["precio"]
+            user_id = str(interaction.user.id)
+            inv = inventarios.setdefault(user_id, {"coronas": 0})
+            precio = tienda_data[item_name]["precio"]
 
-            if item_name not in items_user or items_user[item_name] == 0:
-                if coronas >= precio:
-                    items_user[item_name] = 1
-                    data["coronas"] -= precio
+            if item_name not in inv:
+                if inv["coronas"] >= precio:
+                    inv[item_name] = 1
+                    inv["coronas"] -= precio
                     await interaction.response.send_message(
-                        f"Has **comprado** {item_name} por {precio} coronas. Te quedan {data['coronas']} coronas.",
-                        ephemeral=True
-                    )
+                        f"Compraste {item_name} por 👑 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
                 else:
-                    await interaction.response.send_message(
-                        f"No tienes suficientes coronas para comprar **{item_name}**. Necesitas {precio}, tienes {coronas}.",
-                        ephemeral=True
-                    )
+                    await interaction.response.send_message("❌ No tienes suficientes coronas.", ephemeral=True)
             else:
-                items_user[item_name] -= 1
-                if items_user[item_name] <= 0:
-                    del items_user[item_name]
-                ganancia = precio // 2
-                data["coronas"] += ganancia
+                venta = precio // 2
+                inv[item_name] -= 1
+                if inv[item_name] <= 0:
+                    del inv[item_name]
+                inv["coronas"] += venta
                 await interaction.response.send_message(
-                    f"Has **vendido** {item_name} y recuperado {ganancia} coronas. Ahora tienes {data['coronas']} coronas.",
-                    ephemeral=True
-                )
+                    f"Vendiste {item_name} por 👑 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
+
+            guardar_inventarios()
         return callback
 
 @bot.command()
@@ -113,26 +121,31 @@ async def tienda(ctx):
         await ctx.send("La tienda está vacía.")
         return
 
-    msg = "**🏪 Tienda de objetos mágicos**\n\n"
-    for item_name, data in tienda.items():
-        msg += f"{data['emoji']} {item_name} - {data['precio']} coronas\n"
+    msg = "**🏪 Tienda de objetos:**\n"
+    for nombre, data in tienda_data.items():
+        msg += f"{data['emoji']} {nombre} — 👑 {data['precio']} coronas\n"
 
     view = TiendaView()
     await ctx.send(msg, view=view)
 
 @bot.command()
 async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: int = None):
-    if accion.lower() == "agregar":
-        if not emoji or precio is None:
-            await ctx.send("Debes especificar un emoji y un precio para agregar.")
-            return
-        tienda[nombre] = {"emoji": emoji, "precio": precio}
-        await ctx.send(f"✅ {nombre} agregado a la tienda por {precio} coronas.")
+    if accion.lower() == "agregar" and emoji and precio is not None:
+        tienda_data[nombre] = {"emoji": emoji, "precio": precio}
+        guardar_tienda()
+        await ctx.send(f"✅ Añadido: {emoji} {nombre} — 👑 {precio}")
     elif accion.lower() == "quitar":
-        if nombre in tienda:
+        if nombre in tienda_data:
             del tienda[nombre]
-            await ctx.send(f"🗑️ {nombre} ha sido removido de la tienda.")
+            guardar_tienda()
+            await ctx.send(f"❌ Eliminado {nombre} de la tienda.")
         else:
-            await ctx.send(f"❌ {nombre} no está en la tienda.")
+            await ctx.send("Ese item no está en la tienda.")
     else:
-        await ctx.send("Usa `agregar` o `quitar` como primer argumento.")
+        await ctx.send("Uso: `!editaritem agregar nombre emoji precio` o `!editaritem quitar nombre`")
+
+# Cargar datos antes de ejecutar el bot
+cargar_datos()
+
+# Ejecuta el bot con token desde variable de entorno
+bot.run(os.getenv("DISCORD_TOKEN"))

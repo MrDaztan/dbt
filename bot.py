@@ -52,15 +52,15 @@ async def inventario(ctx):
     msg += f"\n💰 Coronas: {coronas}"
     await ctx.send(msg)
 
-@bot.command(name="coronas+")
-async def coronas_sumar(ctx, miembro: discord.Member, cantidad: int):
+@bot.command()
+async def coronas(ctx, miembro: discord.Member, cantidad: int):
     user_id = miembro.id
     data = inventarios.setdefault(user_id, {"items": {}, "coronas": 0})
     data["coronas"] += cantidad
     await ctx.send(f"{cantidad} coronas añadidas a {miembro.display_name}. Ahora tiene {data['coronas']} coronas.")
 
-@bot.command(name="coronas-")
-async def coronas_restar(ctx, miembro: discord.Member, cantidad: int):
+@bot.command()
+async def coronasrestar(ctx, miembro: discord.Member, cantidad: int):
     user_id = miembro.id
     data = inventarios.setdefault(user_id, {"items": {}, "coronas": 0})
     data["coronas"] = max(0, data["coronas"] - cantidad)
@@ -122,14 +122,13 @@ async def tienda(ctx):
 
 @bot.command()
 async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: int = None):
-    accion = accion.lower()
-    if accion == "agregar":
+    if accion.lower() == "agregar":
         if not emoji or precio is None:
             await ctx.send("Debes especificar un emoji y un precio para agregar.")
             return
         tienda[nombre] = {"emoji": emoji, "precio": precio}
         await ctx.send(f"✅ {nombre} agregado a la tienda por {precio} coronas.")
-    elif accion == "quitar":
+    elif accion.lower() == "quitar":
         if nombre in tienda:
             del tienda[nombre]
             await ctx.send(f"🗑️ {nombre} ha sido removido de la tienda.")

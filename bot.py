@@ -137,4 +137,3 @@ async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: i
             await ctx.send(f"❌ {nombre} no está en la tienda.")
     else:
         await ctx.send("Usa `agregar` o `quitar` como primer argumento.")
-

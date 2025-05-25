@@ -2,22 +2,25 @@ import os
 import json
 import discord
 from discord.ext import commands
-from discord.ui import Button, View
+from discord.ui import Button, View, Select
 
 INVENTARIO_PATH = "inventarios.json"
 TIENDA_PATH = "tienda.json"
+STATS_PATH = "stats.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 inventarios = {}
 tienda_data = {}
+stats_data = {}
 
 # Cargar desde disco
 def cargar_datos():
-    global inventarios, tienda_data
+    global inventarios, tienda_data, stats_data
     try:
         with open(INVENTARIO_PATH, "r", encoding="utf-8") as f:
             inventarios.update(json.load(f))
@@ -30,6 +33,12 @@ def cargar_datos():
     except FileNotFoundError:
         pass
 
+    try:
+        with open(STATS_PATH, "r", encoding="utf-8") as f:
+            stats_data.update(json.load(f))
+    except FileNotFoundError:
+        pass
+
 def guardar_inventarios():
     with open(INVENTARIO_PATH, "w", encoding="utf-8") as f:
         json.dump(inventarios, f, indent=2, ensure_ascii=False)
@@ -37,6 +46,10 @@ def guardar_inventarios():
 def guardar_tienda():
     with open(TIENDA_PATH, "w", encoding="utf-8") as f:
         json.dump(tienda_data, f, indent=2, ensure_ascii=False)
+
+def guardar_stats():
+    with open(STATS_PATH, "w", encoding="utf-8") as f:
+        json.dump(stats_data, f, indent=2, ensure_ascii=False)
 
 @bot.event
 async def on_ready():
@@ -63,7 +76,8 @@ async def comandos(ctx):
     msg = (
         "**Lista de comandos:**\n"
         "`!inventario` - Muestra tu inventario actual.\n"
-        "`!tienda` - Muestra los objetos disponibles en la tienda.\n"
+        "`!tienda` - Interactúa con la tienda.\n"
+        "`!stats` - Muestra tus estadísticas de personaje.\n"
         "`!coronas <cantidad> [@usuario]` - Da coronas a un jugador (solo master).\n"
         "`!coronas- <cantidad> [@usuario]` - Resta coronas a un jugador (solo master).\n"
         "`!editaritem agregar <nombre> <emoji> <precio>` - Añade un item a la tienda (solo master).\n"
@@ -72,7 +86,6 @@ async def comandos(ctx):
     )
     await ctx.send(msg)
 
-# Validar rol master
 def es_master(ctx):
     return any(r.name.lower() == "master" for r in ctx.author.roles)
 
@@ -85,7 +98,7 @@ async def coronas(ctx, cantidad: int, miembro: discord.Member = None):
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
-    inv["coronas"] = inv.get("coronas", 0) + cantidad
+    inv["coronas"] += cantidad
     guardar_inventarios()
     await ctx.send(f"{miembro.display_name} ha recibido 🪙 {cantidad} coronas. Total: {inv['coronas']}")
 
@@ -98,7 +111,7 @@ async def coronas_restar(ctx, cantidad: int, miembro: discord.Member = None):
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
-    inv["coronas"] = max(0, inv.get("coronas", 0) - cantidad)
+    inv["coronas"] = max(0, inv["coronas"] - cantidad)
     guardar_inventarios()
     await ctx.send(f"A {miembro.display_name} se le han restado 🪙 {cantidad} coronas. Total: {inv['coronas']}")
 
@@ -114,8 +127,11 @@ async def daritem(ctx, miembro: discord.Member, nombre: str, cantidad: int):
     await ctx.send(f"✅ Se le ha dado {cantidad}x {nombre} a {miembro.display_name}.")
 
 class TiendaView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def __init__(self, accion, autor):
+        super().__init__(timeout=30)
+        self.accion = accion
+        self.autor = autor
+        self.transacciones = []
         for item_name, data in tienda_data.items():
             emoji = data.get("emoji", "❔")
             btn = Button(style=discord.ButtonStyle.secondary, emoji=emoji, custom_id=item_name)
@@ -124,26 +140,34 @@ class TiendaView(View):
 
     def make_callback(self, item_name):
         async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.autor.id:
+                await interaction.response.send_message("❌ Esta tienda no es para ti.", ephemeral=True)
+                return
+
             user_id = str(interaction.user.id)
             inv = inventarios.setdefault(user_id, {"coronas": 0})
             precio = tienda_data[item_name]["precio"]
 
-            if item_name not in inv:
+            if self.accion == "comprar":
                 if inv["coronas"] >= precio:
-                    inv[item_name] = 1
+                    inv[item_name] = inv.get(item_name, 0) + 1
                     inv["coronas"] -= precio
-                    await interaction.response.send_message(
-                        f"Compraste {item_name} por 🪙 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
+                    self.transacciones.append(f"✅ {interaction.user.display_name} compró {item_name} por 🪙 {precio}.")
+                    await interaction.response.send_message(f"Compraste {item_name} por 🪙 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
                 else:
                     await interaction.response.send_message("❌ No tienes suficientes coronas.", ephemeral=True)
-            else:
-                venta = precio // 2
-                inv[item_name] -= 1
-                if inv[item_name] <= 0:
-                    del inv[item_name]
-                inv["coronas"] += venta
-                await interaction.response.send_message(
-                    f"Vendiste {item_name} por 🪙 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
+
+            elif self.accion == "vender":
+                if inv.get(item_name, 0) > 0:
+                    inv[item_name] -= 1
+                    if inv[item_name] <= 0:
+                        del inv[item_name]
+                    venta = precio // 2
+                    inv["coronas"] += venta
+                    self.transacciones.append(f"🔻 {interaction.user.display_name} vendió {item_name} por 🪙 {venta}.")
+                    await interaction.response.send_message(f"Vendiste {item_name} por 🪙 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ No tienes ese objeto para vender.", ephemeral=True)
 
             guardar_inventarios()
         return callback
@@ -154,12 +178,33 @@ async def tienda(ctx):
         await ctx.send("La tienda está vacía.")
         return
 
-    msg = "**\U0001f3ea Tienda de objetos:**\n"
-    for nombre, data in tienda_data.items():
-        msg += f"{data['emoji']} {nombre} — 🪙 {data['precio']} coronas\n"
+    options = [
+        discord.SelectOption(label="Comprar", value="comprar", emoji="🛒"),
+        discord.SelectOption(label="Vender", value="vender", emoji="💰")
+    ]
 
-    view = TiendaView()
-    await ctx.send(msg, view=view)
+    select = Select(placeholder="¿Qué deseas hacer?", options=options)
+
+    async def select_callback(interaction):
+        if interaction.user.id != ctx.author.id:
+            await interaction.response.send_message("❌ Solo la persona que usó el comando puede elegir.", ephemeral=True)
+            return
+
+        accion = select.values[0]
+        view = TiendaView(accion, ctx.author)
+
+        msg = f"**🏪 Tienda - Modo {accion.capitalize()}**\n"
+        for nombre, data in tienda_data.items():
+            msg += f"{data['emoji']} {nombre} — 🪙 {data['precio']} coronas\n"
+
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
+        await ctx.send(f"📝 {ctx.author.display_name} abrió la tienda en modo {accion}.")
+
+    select.callback = select_callback
+    view = View()
+    view.add_item(select)
+
+    await ctx.send("¿Qué deseas hacer en la tienda?", view=view, ephemeral=True)
 
 @bot.command()
 async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: int = None):
@@ -181,7 +226,38 @@ async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: i
     else:
         await ctx.send("Uso: `!editaritem agregar <nombre> <emoji> <precio>` o `!editaritem quitar <nombre>`")
 
-# Cargar datos antes de ejecutar el bot
-cargar_datos()
+@bot.command()
+async def stats(ctx):
+    user_id = str(ctx.author.id)
+    roles = [r.name.lower() for r in ctx.author.roles]
 
+    razas_validas = {"humano": "Humano", "enano": "Enano", "elfo": "Elfo"}
+    razas_encontradas = [razas_validas[r] for r in razas_validas if r in roles]
+
+    if not razas_encontradas:
+        raza = "Humano"
+    elif len(razas_encontradas) == 1:
+        raza = razas_encontradas[0]
+    elif len(razas_encontradas) == 2:
+        raza = f"Medio {razas_encontradas[1]}"
+    else:
+        raza = " y ".join(razas_encontradas)
+
+    stats = stats_data.get(user_id, {
+        "clase": "Aventurero",
+        "salud": 100,
+        "mana": 50
+    })
+    stats["raza"] = raza
+    stats_data[user_id] = stats
+    guardar_stats()
+
+    embed = discord.Embed(title=f"📜 Stats de {ctx.author.display_name}", color=0x1abc9c)
+    embed.add_field(name="🧬 Raza", value=stats["raza"], inline=True)
+    embed.add_field(name="⚔️ Clase", value=stats["clase"], inline=True)
+    embed.add_field(name="❤️ Salud", value=f"{stats['salud']}", inline=True)
+    embed.add_field(name="🔮 Mana", value=f"{stats['mana']}", inline=True)
+    await ctx.send(embed=embed)
+
+cargar_datos()
 bot.run(os.getenv("DISCORD_TOKEN"))

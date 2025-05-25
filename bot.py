@@ -8,6 +8,7 @@ from discord import TextStyle
 INVENTARIO_PATH = "inventarios.json"
 TIENDA_PATH = "tienda.json"
 STATS_PATH = "stats.json"
+RECETAS_PATH = "recetas.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -18,10 +19,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 inventarios = {}
 tienda_data = {}
 stats_data = {}
+recetas_data = {}
 
 # Cargar desde disco
 def cargar_datos():
-    global inventarios, tienda_data, stats_data
+    global inventarios, tienda_data, stats_data, recetas_data
+    try:
+        with open(RECETAS_PATH, "r", encoding="utf-8") as f:
+            recetas_data.update(json.load(f))
+    except FileNotFoundError:
+        pass
     try:
         with open(INVENTARIO_PATH, "r", encoding="utf-8") as f:
             inventarios.update(json.load(f))
@@ -252,6 +259,90 @@ async def stats(ctx):
     embed.add_field(name="❤️ Salud", value=f"`{stats.get('salud', 0)}`", inline=True)
     embed.add_field(name="💧 Maná", value=f"`{stats.get('mana', 0)}`", inline=True)
     await ctx.send(embed=embed)
+
+class CategoriaForja(View):
+    def __init__(self, autor):
+        super().__init__(timeout=None)
+        self.autor = autor
+        self.select = Select(
+            placeholder="Elige una categoría",
+            options=[
+                discord.SelectOption(label="Armas", value="armas", emoji="⚔️"),
+                discord.SelectOption(label="Armaduras", value="armaduras", emoji="🛡️"),
+                discord.SelectOption(label="Accesorios", value="accesorios", emoji="💍")
+            ]
+        )
+        self.select.callback = self.categoria_callback
+        self.add_item(self.select)
+
+    async def categoria_callback(self, interaction: discord.Interaction):
+        if interaction.user != self.autor:
+            await interaction.response.send_message("❌ Este menú no es para ti.", ephemeral=True)
+            return
+
+        categoria = self.select.values[0]
+        view = ItemsForjaView(categoria, self.autor)
+        await interaction.response.send_message(f"**Selecciona un objeto de `{categoria.title()}`:**", view=view, ephemeral=True)
+
+class ItemsForjaView(View):
+    def __init__(self, categoria, autor):
+        super().__init__(timeout=None)
+        self.autor = autor
+        self.categoria = categoria
+        opciones = [
+            discord.SelectOption(label=item, value=item, emoji=data.get("emoji", "❔"))
+            for item, data in recetas_data[categoria].items()
+        ]
+        self.select = Select(placeholder="Elige un objeto", options=opciones)
+        self.select.callback = self.item_callback
+        self.add_item(self.select)
+
+    async def item_callback(self, interaction: discord.Interaction):
+        if interaction.user != self.autor:
+            await interaction.response.send_message("❌ Este menú no es para ti.", ephemeral=True)
+            return
+
+        item = self.select.values[0]
+        receta = recetas_data[self.categoria][item]["recursos"]
+        recursos_str = "\n".join([f"- {nombre}: {cantidad}" for nombre, cantidad in receta.items()])
+        emoji = recetas_data[self.categoria][item].get("emoji", "❔")
+
+        boton = Button(label=f"Fabricar {item}", emoji=emoji, style=discord.ButtonStyle.green)
+
+        async def fabricar_callback(btn_interaction: discord.Interaction):
+            if btn_interaction.user != self.autor:
+                await btn_interaction.response.send_message("❌ Este botón no es para ti.", ephemeral=True)
+                return
+
+            user_id = str(self.autor.id)
+            inv = inventarios.setdefault(user_id, {"coronas": 0})
+
+            if all(inv.get(recurso, 0) >= cantidad for recurso, cantidad in receta.items()):
+                for recurso, cantidad in receta.items():
+                    inv[recurso] -= cantidad
+                    if inv[recurso] <= 0:
+                        del inv[recurso]
+                inv[item] = inv.get(item, 0) + 1
+                guardar_inventarios()
+                await btn_interaction.response.send_message(f"✅ ¡Fabricaste {emoji} {item} con éxito!", ephemeral=True)
+            else:
+                await btn_interaction.response.send_message("❌ No tienes los recursos necesarios para fabricar este objeto.", ephemeral=True)
+
+        boton.callback = fabricar_callback
+        view = View()
+        view.add_item(boton)
+
+        await interaction.response.send_message(
+            f"**{emoji} {item}** requiere:\n{recursos_str}",
+            view=view,
+            ephemeral=True
+        )
+
+@bot.command()
+async def forja(ctx):
+    view = CategoriaForja(ctx.author)
+    await ctx.send("🔨 Bienvenido a la **Forja**. Elige una categoría:", view=view, ephemeral=True)
+
 
 cargar_datos()
 bot.run(os.getenv("DISCORD_TOKEN"))

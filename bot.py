@@ -3,6 +3,7 @@ import json
 import discord
 from discord.ext import commands
 from discord.ui import Button, View, Select
+from discord import TextStyle
 
 INVENTARIO_PATH = "inventarios.json"
 TIENDA_PATH = "tienda.json"
@@ -55,6 +56,9 @@ def guardar_stats():
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
 
+def es_master(ctx):
+    return any(r.name.lower() == "master" for r in ctx.author.roles)
+
 @bot.command()
 async def hola(ctx):
     await ctx.send('¡Hola!')
@@ -73,21 +77,18 @@ async def inventario(ctx):
 
 @bot.command()
 async def comandos(ctx):
-    msg = (
-        "**Lista de comandos:**\n"
-        "`!inventario` - Muestra tu inventario actual.\n"
-        "`!tienda` - Interactúa con la tienda.\n"
-        "`!stats` - Muestra tus estadísticas de personaje.\n"
-        "`!coronas <cantidad> [@usuario]` - Da coronas a un jugador (solo master).\n"
-        "`!coronas- <cantidad> [@usuario]` - Resta coronas a un jugador (solo master).\n"
-        "`!editaritem agregar <nombre> <emoji> <precio>` - Añade un item a la tienda (solo master).\n"
-        "`!editaritem quitar <nombre>` - Quita un item de la tienda (solo master).\n"
-        "`!daritem <usuario> <nombre_item> <cantidad>` - Da un item directo a un jugador (solo master).\n"
-    )
+    master = es_master(ctx)
+    msg = "**Lista de comandos:**\n"
+    msg += "`!inventario` - Muestra tu inventario actual.\n"
+    msg += "`!tienda` - Muestra los objetos disponibles en la tienda.\n"
+    msg += "`!stats` - Muestra tus estadísticas de personaje.\n"
+    if master:
+        msg += "`!coronas <cantidad> [@usuario]` - Da coronas a un jugador (solo master).\n"
+        msg += "`!coronas- <cantidad> [@usuario]` - Resta coronas a un jugador (solo master).\n"
+        msg += "`!editaritem agregar <nombre> <emoji> <precio>` - Añade un item a la tienda (solo master).\n"
+        msg += "`!editaritem quitar <nombre>` - Quita un item de la tienda (solo master).\n"
+        msg += "`!daritem <usuario> <nombre_item> <cantidad>` - Da un item directo a un jugador (solo master).\n"
     await ctx.send(msg)
-
-def es_master(ctx):
-    return any(r.name.lower() == "master" for r in ctx.author.roles)
 
 @bot.command()
 async def coronas(ctx, cantidad: int, miembro: discord.Member = None):
@@ -98,7 +99,7 @@ async def coronas(ctx, cantidad: int, miembro: discord.Member = None):
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
-    inv["coronas"] += cantidad
+    inv["coronas"] = inv.get("coronas", 0) + cantidad
     guardar_inventarios()
     await ctx.send(f"{miembro.display_name} ha recibido 🪙 {cantidad} coronas. Total: {inv['coronas']}")
 
@@ -111,7 +112,7 @@ async def coronas_restar(ctx, cantidad: int, miembro: discord.Member = None):
         miembro = ctx.author
     user_id = str(miembro.id)
     inv = inventarios.setdefault(user_id, {"coronas": 0})
-    inv["coronas"] = max(0, inv["coronas"] - cantidad)
+    inv["coronas"] = max(0, inv.get("coronas", 0) - cantidad)
     guardar_inventarios()
     await ctx.send(f"A {miembro.display_name} se le han restado 🪙 {cantidad} coronas. Total: {inv['coronas']}")
 
@@ -127,11 +128,12 @@ async def daritem(ctx, miembro: discord.Member, nombre: str, cantidad: int):
     await ctx.send(f"✅ Se le ha dado {cantidad}x {nombre} a {miembro.display_name}.")
 
 class TiendaView(View):
-    def __init__(self, accion, autor):
-        super().__init__(timeout=30)
-        self.accion = accion
+    def __init__(self, modo, autor):
+        super().__init__(timeout=None)
+        self.modo = modo  # 'comprar' o 'vender'
         self.autor = autor
         self.transacciones = []
+
         for item_name, data in tienda_data.items():
             emoji = data.get("emoji", "❔")
             btn = Button(style=discord.ButtonStyle.secondary, emoji=emoji, custom_id=item_name)
@@ -140,7 +142,7 @@ class TiendaView(View):
 
     def make_callback(self, item_name):
         async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.autor.id:
+            if interaction.user != self.autor:
                 await interaction.response.send_message("❌ Esta tienda no es para ti.", ephemeral=True)
                 return
 
@@ -148,28 +150,35 @@ class TiendaView(View):
             inv = inventarios.setdefault(user_id, {"coronas": 0})
             precio = tienda_data[item_name]["precio"]
 
-            if self.accion == "comprar":
+            if self.modo == "comprar":
                 if inv["coronas"] >= precio:
                     inv[item_name] = inv.get(item_name, 0) + 1
                     inv["coronas"] -= precio
-                    self.transacciones.append(f"✅ {interaction.user.display_name} compró {item_name} por 🪙 {precio}.")
+                    self.transacciones.append(f"🛒 {interaction.user.display_name} compró {item_name} por 🪙 {precio}")
                     await interaction.response.send_message(f"Compraste {item_name} por 🪙 {precio}. Te quedan: {inv['coronas']}", ephemeral=True)
                 else:
                     await interaction.response.send_message("❌ No tienes suficientes coronas.", ephemeral=True)
-
-            elif self.accion == "vender":
+            else:
                 if inv.get(item_name, 0) > 0:
+                    venta = precio // 2
                     inv[item_name] -= 1
                     if inv[item_name] <= 0:
                         del inv[item_name]
-                    venta = precio // 2
                     inv["coronas"] += venta
-                    self.transacciones.append(f"🔻 {interaction.user.display_name} vendió {item_name} por 🪙 {venta}.")
+                    self.transacciones.append(f"💰 {interaction.user.display_name} vendió {item_name} por 🪙 {venta}")
                     await interaction.response.send_message(f"Vendiste {item_name} por 🪙 {venta}. Ahora tienes: {inv['coronas']}", ephemeral=True)
                 else:
                     await interaction.response.send_message("❌ No tienes ese objeto para vender.", ephemeral=True)
 
             guardar_inventarios()
+
+            if len(self.transacciones) >= 1:
+                canal_log = discord.utils.get(interaction.guild.text_channels, name="tienda-log")
+                if canal_log:
+                    for trans in self.transacciones:
+                        await canal_log.send(trans)
+                    self.transacciones.clear()
+
         return callback
 
 @bot.command()
@@ -178,32 +187,29 @@ async def tienda(ctx):
         await ctx.send("La tienda está vacía.")
         return
 
-    options = [
-        discord.SelectOption(label="Comprar", value="comprar", emoji="🛒"),
-        discord.SelectOption(label="Vender", value="vender", emoji="💰")
-    ]
+    opciones = Select(
+        placeholder="¿Qué deseas hacer?",
+        options=[
+            discord.SelectOption(label="Comprar", value="comprar", emoji="🛒"),
+            discord.SelectOption(label="Vender", value="vender", emoji="💰")
+        ]
+    )
 
-    select = Select(placeholder="¿Qué deseas hacer?", options=options)
-
-    async def select_callback(interaction):
-        if interaction.user.id != ctx.author.id:
-            await interaction.response.send_message("❌ Solo la persona que usó el comando puede elegir.", ephemeral=True)
+    async def select_callback(interaction: discord.Interaction):
+        if interaction.user != ctx.author:
+            await interaction.response.send_message("❌ Esta tienda no es para ti.", ephemeral=True)
             return
 
-        accion = select.values[0]
-        view = TiendaView(accion, ctx.author)
-
-        msg = f"**🏪 Tienda - Modo {accion.capitalize()}**\n"
+        modo = opciones.values[0]
+        view = TiendaView(modo, ctx.author)
+        msg = "**Tienda de objetos:**\n"
         for nombre, data in tienda_data.items():
             msg += f"{data['emoji']} {nombre} — 🪙 {data['precio']} coronas\n"
-
         await interaction.response.send_message(msg, view=view, ephemeral=True)
-        await ctx.send(f"📝 {ctx.author.display_name} abrió la tienda en modo {accion}.")
 
-    select.callback = select_callback
+    opciones.callback = select_callback
     view = View()
-    view.add_item(select)
-
+    view.add_item(opciones)
     await ctx.send("¿Qué deseas hacer en la tienda?", view=view, ephemeral=True)
 
 @bot.command()
@@ -230,33 +236,21 @@ async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: i
 async def stats(ctx):
     user_id = str(ctx.author.id)
     roles = [r.name.lower() for r in ctx.author.roles]
+    raza = "humano"
+    if "elfo" in roles:
+        raza = "elfo"
+    elif "enano" in roles:
+        raza = "enano"
 
-    razas_validas = {"humano": "Humano", "enano": "Enano", "elfo": "Elfo"}
-    razas_encontradas = [razas_validas[r] for r in razas_validas if r in roles]
-
-    if not razas_encontradas:
-        raza = "Humano"
-    elif len(razas_encontradas) == 1:
-        raza = razas_encontradas[0]
-    elif len(razas_encontradas) == 2:
-        raza = f"Medio {razas_encontradas[1]}"
-    else:
-        raza = " y ".join(razas_encontradas)
-
-    stats = stats_data.get(user_id, {
-        "clase": "Aventurero",
-        "salud": 100,
-        "mana": 50
-    })
-    stats["raza"] = raza
-    stats_data[user_id] = stats
+    stats = stats_data.setdefault(user_id, {"clase": "", "salud": 100, "mana": 50})
+    stats_data[user_id]["raza"] = raza
     guardar_stats()
 
-    embed = discord.Embed(title=f"📜 Stats de {ctx.author.display_name}", color=0x1abc9c)
-    embed.add_field(name="🧬 Raza", value=stats["raza"], inline=True)
-    embed.add_field(name="⚔️ Clase", value=stats["clase"], inline=True)
-    embed.add_field(name="❤️ Salud", value=f"{stats['salud']}", inline=True)
-    embed.add_field(name="🔮 Mana", value=f"{stats['mana']}", inline=True)
+    embed = discord.Embed(title=f"🧙 Stats de {ctx.author.display_name}", color=discord.Color.purple())
+    embed.add_field(name="🧬 Raza", value=f"`{raza.title()}`", inline=True)
+    embed.add_field(name="🛡️ Clase", value=f"`{stats.get('clase', '')}`", inline=True)
+    embed.add_field(name="❤️ Salud", value=f"`{stats.get('salud', 0)}`", inline=True)
+    embed.add_field(name="💧 Maná", value=f"`{stats.get('mana', 0)}`", inline=True)
     await ctx.send(embed=embed)
 
 cargar_datos()

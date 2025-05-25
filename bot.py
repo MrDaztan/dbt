@@ -136,7 +136,7 @@ async def editaritem(ctx, accion: str, nombre: str, emoji: str = None, precio: i
         await ctx.send(f"✅ Añadido: {emoji} {nombre} — 👑 {precio}")
     elif accion.lower() == "quitar":
         if nombre in tienda_data:
-            del tienda[nombre]
+            del tienda_data[nombre]
             guardar_tienda()
             await ctx.send(f"❌ Eliminado {nombre} de la tienda.")
         else:
